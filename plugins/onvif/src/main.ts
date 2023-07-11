@@ -30,7 +30,7 @@ function convertAudioCodec(codec: string) {
     return codec?.toLowerCase();
 }
 
-class OnvifCamera extends RtspSmartCamera implements ObjectDetector, Intercom, VideoCameraConfiguration, Reboot {
+export class OnvifCamera extends RtspSmartCamera implements ObjectDetector, Intercom, VideoCameraConfiguration, Reboot {
     eventStream: Stream;
     client: OnvifCameraAPI;
     rtspMediaStreamOptions: Promise<UrlMediaStreamOptions[]>;
@@ -129,6 +129,17 @@ class OnvifCamera extends RtspSmartCamera implements ObjectDetector, Intercom, V
 
     getDetectionInput(detectionId: any, eventId?: any): Promise<MediaObject> {
         throw new Error("Method not implemented.");
+    }
+
+    getDefaultStream(vsos: UrlMediaStreamOptions[]) {
+        const name = this.storage.getItem('defaultStream');
+        if (name) {
+            const vso = vsos?.find(s => s.name === name);
+            if (vso) {
+                return vso;
+            }
+        }
+        return super.getDefaultStream(vsos);
     }
 
     async getObjectTypes(): Promise<ObjectDetectionTypes> {
@@ -366,21 +377,34 @@ class OnvifCamera extends RtspSmartCamera implements ObjectDetector, Intercom, V
             },
         ];
 
-        if (!isDoorbell) {
+        // if (!isDoorbell) {
             ret.push(
                 {
-                    title: 'Two Way Audio',
+                    title: 'Two Way Audio (non-doorbells)',
                     type: 'boolean',
                     key: 'onvifTwoWay',
+                    readonly: isDoorbell,
                     value: (!!this.providedInterfaces?.includes(ScryptedInterface.Intercom)).toString(),
                 }
             )
-        }
+        // }
+
+        const vsos: UrlMediaStreamOptions[] = await this.getConstructedVideoStreamOptions();
+        ret.push(
+            {
+                subgroup: 'Advanced',
+                key: 'defaultStream',
+                title: 'Default Stream',
+                description: "For multi-stream NVR systems, use this to select the 'default' stream for things like snapshots and two-way audio.",
+                choices: vsos.map(vso => vso.name),
+                value: this.getDefaultStream(vsos)?.name
+            }
+        )
 
         return ret;
     }
 
-    updateDevice() {
+    async updateDevice() {
         const interfaces: string[] = [...this.provider.getInterfaces()];
         if (this.storage.getItem('onvifDetector') === 'true')
             interfaces.push(ScryptedInterface.ObjectDetector);
@@ -390,6 +414,20 @@ class OnvifCamera extends RtspSmartCamera implements ObjectDetector, Intercom, V
             interfaces.push(ScryptedInterface.BinarySensor);
             type = ScryptedDeviceType.Doorbell;
         }
+
+        // const vsos = await this.getConstructedVideoStreamOptions();
+        // this.intercom.url = this.getDefaultStream(vsos).url;
+        // try {
+        //     if (await this.intercom.checkIntercom()) {
+        //         this.putSetting('onvifTwoWay', 'true');
+        //     }
+        // }
+        // catch (e) {
+        //     this.console.warn("error while probing intercom", e);
+        // }
+        // finally {
+        //     this.intercom.intercomClient?.client.destroy();
+        // }
 
         const twoWay = this.storage.getItem('onvifTwoWay') === 'true';
         if (twoWay || doorbell)
@@ -405,7 +443,7 @@ class OnvifCamera extends RtspSmartCamera implements ObjectDetector, Intercom, V
 
         this.updateDeviceInfo();
 
-        if (key !== 'onvifDoorbell' && key !== 'onvifTwoWay')
+        if (key !== 'onvifDoorbell' && key !== 'onvifTwoWay' && key !== 'defaultStream')
             return super.putSetting(key, value);
 
         this.storage.setItem(key, value);
@@ -414,7 +452,7 @@ class OnvifCamera extends RtspSmartCamera implements ObjectDetector, Intercom, V
 
     async startIntercom(media: MediaObject) {
         const options = await this.getConstructedVideoStreamOptions();
-        const stream = options[0];
+        const stream = this.getDefaultStream(options);
         this.intercom.url = stream.url;
         return this.intercom.startIntercom(media);
     }
@@ -596,7 +634,8 @@ class OnvifProvider extends RtspProvider implements DeviceDiscovery {
 
         const intercom = new OnvifIntercom(device);
         try {
-            intercom.url = (await device.getConstructedVideoStreamOptions())[0].url;
+            const vsos = await device.getConstructedVideoStreamOptions();
+            intercom.url = device.getDefaultStream(vsos).url;
             if (await intercom.checkIntercom()) {
                 device.putSetting('onvifTwoWay', 'true');
             }
